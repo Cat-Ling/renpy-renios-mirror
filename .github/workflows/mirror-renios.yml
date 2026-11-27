@@ -1,0 +1,73 @@
+name: Mirror Ren'Py iOS and SDK Releases
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Comma-separated renpy/renpy release tags to mirror'
+        required: false
+        type: string
+        default: '8.6.1.26111705,8.5.3.26051504,8.4.1.25072401,8.3.7.25031702,7.8.7.25031702'
+      force_remirror:
+        description: 'Overwrite existing mirrored releases for matching tags'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    name: Mirror Upstream Ren'Py Archives
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Mirror releases
+        run: |
+          set -euo pipefail
+          RAW_TAGS="${{ github.event.inputs.tags || '8.6.1.26111705,8.5.3.26051504,8.4.1.25072401,8.3.7.25031702,7.8.7.25031702' }}"
+          FORCE="${{ github.event.inputs.force_remirror || 'false' }}"
+
+          # On scheduled runs, also include the latest non-prerelease tag from renpy/renpy.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            LATEST=$(gh api "repos/renpy/renpy/releases/latest" --jq '.tag_name // empty' 2>/dev/null || true)
+            if [ -n "$LATEST" ]; then
+              RAW_TAGS="${RAW_TAGS},${LATEST}"
+            fi
+          fi
+
+          IFS=',' read -ra TAG_LIST <<< "$RAW_TAGS"
+          for raw in "${TAG_LIST[@]}"; do
+            TAG="$(echo "$raw" | xargs)"
+            [ -z "$TAG" ] && continue
+
+            if [ "$FORCE" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Skipping $TAG: already mirrored."
+              continue
+            fi
+
+            VER="$(echo "$TAG" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+            echo "Mirroring $TAG (version $VER)..."
+
+            WORK="$(mktemp -d)"
+            BASE_URL="https://github.com/renpy/renpy/releases/download/${TAG}"
+            curl -fsSL --retry 3 "${BASE_URL}/renpy-${VER}-renios.zip" -o "$WORK/renpy-${VER}-renios.zip"
+            curl -fsSL --retry 3 "${BASE_URL}/renpy-${VER}-sdk.zip" -o "$WORK/renpy-${VER}-sdk.zip"
+            curl -fsSL "${BASE_URL}/checksums.txt" -o "$WORK/checksums.txt" 2>/dev/null || rm -f "$WORK/checksums.txt"
+
+            (cd "$WORK" && sha256sum renpy-* > SHA256SUMS)
+
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Ren'Py $VER ($TAG)" \
+              --notes "Mirrored upstream archives from https://github.com/renpy/renpy/releases/tag/${TAG}." \
+              "$WORK"/*
+
+            rm -rf "$WORK"
+          done

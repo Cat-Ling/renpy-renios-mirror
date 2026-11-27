@@ -1,0 +1,10 @@
+version = 1
+
+[[annotations]]
+path = [
+    "README.md",
+    ".github/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 RenPlay Contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
